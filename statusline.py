@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import sys
 import json
 import urllib.request
@@ -6,6 +7,7 @@ import urllib.error
 import subprocess
 import platform
 from pathlib import Path
+from datetime import datetime, timezone
 
 # ANSI colors
 BLUE = "\033[34m"
@@ -29,8 +31,10 @@ def main():
         return
 
     # Extract fields
-    current_directory = data.get("cwd", "")
+    project = os.path.basename(data.get("cwd", ""))
     model = data.get("model", {}).get("display_name", "")
+    context_window = data.get("context_window", {})
+    context_percentage = context_window.get("used_percentage", 0) or 0
 
     # Fetch usage from API
     access_token = get_access_token()
@@ -40,8 +44,10 @@ def main():
         usage_str = format_usage(usage_data)
     else:
         usage_str = f"{RED}No credentials{RESET}"
+    
+    context_usage_str = f"{get_usage_color(context_percentage)}{context_percentage:.0f}%{RESET}"
 
-    line = f"{BLUE}{model}{RESET} | {usage_str} | Dir: {current_directory}"
+    line = f"{project} | {BLUE}{model}{RESET} | Ctx: {context_usage_str} | {usage_str}"
 
     print(line)
 
@@ -103,6 +109,43 @@ def fetch_usage(access_token: str) -> dict | None:
     except (urllib.error.URLError, json.JSONDecodeError, TimeoutError):
         return None
 
+def format_reset_time(resets_at_str: str | None) -> str:
+    """Formats the reset time into a human-readable string like '1d 4h' or '3h 4m'."""
+    if not resets_at_str:
+        return ""
+    try:
+        if resets_at_str.endswith('Z'):
+            resets_at_str = resets_at_str[:-1] + '+00:00'
+        
+        resets_at = datetime.fromisoformat(resets_at_str)
+        
+        if resets_at.tzinfo is None:
+            resets_at = resets_at.replace(tzinfo=timezone.utc)
+
+        now = datetime.now(timezone.utc)
+        delta = resets_at - now
+
+        if delta.total_seconds() <= 0:
+            return " (now)"
+
+        total_seconds = int(delta.total_seconds())
+        
+        days = total_seconds // (24 * 3600)
+        remainder_after_days = total_seconds % (24 * 3600)
+        hours = remainder_after_days // 3600
+        minutes = (remainder_after_days % 3600) // 60
+
+        if days > 0:
+            return f" ({days}d {hours}h)"
+        elif hours > 0:
+            return f" ({hours}h {minutes}m)"
+        elif minutes > 0:
+            return f" ({minutes}m)"
+        else:
+            return " (<1m)"
+    except (ValueError, TypeError):
+        return ""
+
 
 def format_usage(usage_data: dict) -> str:
     """Format usage data for statusline display."""
@@ -116,8 +159,11 @@ def format_usage(usage_data: dict) -> str:
     five_hour_percentage = five_hour_usage.get("utilization", 0) or 0
     weekly_percentage = weekly_usage.get("utilization", 0) or 0
 
-    five_hour_str = f"{get_usage_color(five_hour_percentage)}{five_hour_percentage:.0f}%{RESET}"
-    weekly_str = f"{get_usage_color(weekly_percentage)}{weekly_percentage:.0f}%{RESET}"
+    five_hour_reset_str = format_reset_time(five_hour_usage.get("resets_at"))
+    weekly_reset_str = format_reset_time(weekly_usage.get("resets_at"))
+
+    five_hour_str = f"{get_usage_color(five_hour_percentage)}{five_hour_percentage:.0f}%{RESET}{five_hour_reset_str}"
+    weekly_str = f"{get_usage_color(weekly_percentage)}{weekly_percentage:.0f}%{RESET}{weekly_reset_str}"
 
     return f"5h: {five_hour_str} | 7d: {weekly_str}"
 
